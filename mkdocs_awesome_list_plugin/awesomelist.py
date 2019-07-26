@@ -1,5 +1,6 @@
 import re
 import sys
+import uuid
 from mkdocs.plugins import BasePlugin
 from webpreview import web_preview
 
@@ -27,6 +28,10 @@ HTML = """
 
 class AwesomeList(BasePlugin):
 
+    def __init__(self):
+        super().__init__()
+        self.social_cards = {}
+
     def on_page_markdown(self, markdown, **kwargs):
         copy = markdown
         extra_characters = 0
@@ -34,17 +39,25 @@ class AwesomeList(BasePlugin):
             end_char  = match.span()[1]
             full_match = match.group()
             items = match.groups()
-            # print(end_char, items)
             try:
-                title, description, image = web_preview(items[1], timeout=1)
-            except WebpreviewException:
-                print('\nCould not retrieve data.\n\tF: {}\n\tT: {}\n\tU: {}\n\tD: {}'.format(full_match, items[0], items[1], items[2]))
+                title, description, image = ('title', 'description', 'https://avatars0.githubusercontent.com/u/21085506?s=400&v=4')  #web_preview(items[1], timeout=5)
+            except KeyboardInterrupt as e:
+                raise e
+            except Exception as e:
+                print("\nError trying to retrieve data: {}".format(e))
+                print("\tF: {}".format(full_match))
+                print("\tT: {}".format(items[0]))
+                print("\tU: {}".format(items[1]))
+                print("\tD: {}".format(items[2]))
             else:
-                # print('Parsed:{}'.format(full_match))
                 print(".", end=" ")
                 sys.stdout.flush()
-                str_to_copy = HTML.format(image, title, description)
-                #str_to_copy = '\nhi\n'
-                copy = copy[:end_char + extra_characters] + str_to_copy + markdown[end_char:]
-                extra_characters += len(str_to_copy)
+                uniqueId = uuid.uuid4().hex
+                self.social_cards[uniqueId] = HTML.format(image, title, description)
+                injected_str = '{' + uniqueId +'}'
+                copy = copy[:end_char + extra_characters] + injected_str + markdown[end_char:]
+                extra_characters += len(injected_str)
         return copy
+
+    def on_page_content(self, html, page, config, **kwargs):
+        return html.format(**self.social_cards)
