@@ -6,10 +6,9 @@ from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, urljoin
 
 import requests
+from mkdocs.config import config_options
 from mkdocs.plugins import BasePlugin
 from webpreview import web_preview
-
-DEBUG = True
 
 HTML = """
 <div style="
@@ -87,6 +86,10 @@ async def _fetch_all_previews(entries):
 
 class AwesomeList(BasePlugin):
 
+    config_scheme = (
+        ("debug-log", config_options.Type(bool, default=False)),
+    )
+
     def __init__(self):
         super().__init__()
         self.social_cards = {}
@@ -106,7 +109,7 @@ class AwesomeList(BasePlugin):
             entries.append((items[0], items[1], items[2]))
 
         # Fetch all web previews in parallel
-        print(f"\nFetching {len(entries)} social cards...", end=" ")
+        print(f"\n[AwesomeList] Fetching {len(entries)} social cards...", end=" ")
         sys.stdout.flush()
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -119,11 +122,11 @@ class AwesomeList(BasePlugin):
         card_data = {}
         for result in results:
             if isinstance(result, Exception):
-                print(f"\nError fetching preview: {result}")
+                print(f"\n[AwesomeList] Error fetching preview: {result}")
                 continue
             entry, title, description, image = result
             card_data[entry[1]] = (title, description, image)
-            if DEBUG:
+            if self.config["debug-log"]:
                 print(f"\n  [{entry[0]}]")
                 print(f"    URL:   {entry[1]}")
                 print(f"    Title: {title}")
