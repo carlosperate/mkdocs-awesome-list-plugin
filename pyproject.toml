@@ -1,0 +1,39 @@
+[project]
+name = "MkDocsAwesomeListPlugin"
+version = "0.1.0"
+description = "MkDocs Plugin to inject social media cards for each entry in an awesome-list."
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+authors = [
+  { name = "Carlos Pereira Atencio", email = "carlosperate@embeddedlog.com" },
+]
+keywords = ["mkdocs", "plugin", "awesome", "list"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+  "mkdocs",
+  "webpreview>=1.6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/carlosperate/mkdocs-awesome-list-plugin"
+
+[project.entry-points."mkdocs.plugins"]
+awesome-list = "mkdocs_awesome_list_plugin.awesomelist:AwesomeList"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["mkdocs_awesome_list_plugin"]
