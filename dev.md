@@ -4,7 +4,13 @@
 
 In the virtual environment:
 ```
-pip install -e .
+pip install -e ".[dev]"
+```
+
+## Run tests
+
+```bash
+pytest tests/ -v
 ```
 
 ## Build

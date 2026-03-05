@@ -25,6 +25,9 @@ dependencies = [
   "webpreview>=1.6.0",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest"]
+
 [project.urls]
 Homepage = "https://github.com/carlosperate/mkdocs-awesome-list-plugin"
 
