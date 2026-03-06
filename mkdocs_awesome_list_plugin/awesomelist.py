@@ -88,6 +88,7 @@ class AwesomeList(BasePlugin):
 
     config_scheme = (
         ("debug-log", config_options.Type(bool, default=False)),
+        ("card-style", config_options.Choice(("append", "replace"), default="append")),
     )
 
     def __init__(self):
@@ -132,15 +133,15 @@ class AwesomeList(BasePlugin):
                 print(f"    Title: {title}")
                 print(f"    Desc:  {description}")
                 print(f"    Image: {image}")
-            else:
-                print(".", end=" ")
             sys.stdout.flush()
         print()
 
         # Inject social card placeholders into the markdown
+        replace_mode = self.config.get("card-style", "append") == "replace"
         copy = markdown
         extra_characters = 0
         for match in matches:
+            start_char = match.span()[0]
             end_char = match.span()[1]
             items = match.groups()
             url = items[1]
@@ -149,11 +150,20 @@ class AwesomeList(BasePlugin):
                 continue
 
             title, description, image = card_data[url]
-            card_options = {
-                "title": title or items[0],
-                "description": description or items[2],
-                "url": url,
-            }
+            if replace_mode:
+                # Use the awesome-list entry text, not the OG metadata
+                card_options = {
+                    "title": items[0],
+                    "description": items[2],
+                    "url": url,
+                }
+            else:
+                # Use the OG metadata title and description
+                card_options = {
+                    "title": title or items[0],
+                    "description": description or items[2],
+                    "url": url,
+                }
             if not image:
                 card_options["img_style"] = "display: none"
                 card_options["image"] = ""
@@ -164,8 +174,18 @@ class AwesomeList(BasePlugin):
             uniqueId = uuid.uuid4().hex
             self.social_cards[uniqueId] = HTML.format(**card_options)
             injected_str = '{' + uniqueId + '}'
-            copy = copy[:end_char + extra_characters] + injected_str + copy[end_char + extra_characters:]
-            extra_characters += len(injected_str)
+
+            if replace_mode:
+                # Replace the entire awesome-list line with the placeholder
+                adj_start = start_char + extra_characters
+                adj_end = end_char + extra_characters
+                copy = copy[:adj_start] + injected_str + copy[adj_end:]
+                extra_characters += len(injected_str) - (end_char - start_char)
+            else:
+                # Append the placeholder after the line
+                adj_end = end_char + extra_characters
+                copy = copy[:adj_end] + injected_str + copy[adj_end:]
+                extra_characters += len(injected_str)
 
         return copy
 

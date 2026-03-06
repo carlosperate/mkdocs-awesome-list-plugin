@@ -84,9 +84,9 @@ class TestResolveAndValidateImage:
 class TestOnPageMarkdown:
     """Tests for markdown processing and social-card injection."""
 
-    def _make_plugin(self, debug=False):
+    def _make_plugin(self, debug=False, card_style="append"):
         plugin = AwesomeList()
-        plugin.config = {"debug-log": debug}
+        plugin.config = {"debug-log": debug, "card-style": card_style}
         return plugin
 
     def test_no_matches_returns_unchanged(self):
@@ -230,6 +230,97 @@ class TestOnPageMarkdown:
         card_html = list(plugin.social_cards.values())[0]
         assert "FallbackName" in card_html
         assert "Fallback desc" in card_html
+
+    @patch("mkdocs_awesome_list_plugin.awesomelist._fetch_all_previews", new_callable=MagicMock)
+    @patch("mkdocs_awesome_list_plugin.awesomelist.asyncio.set_event_loop")
+    @patch("mkdocs_awesome_list_plugin.awesomelist.asyncio.new_event_loop")
+    def test_replace_mode_removes_original_line(self, mock_new_loop, _mock_set, _mock_fetch):
+        """In replace mode, the original awesome-list line is replaced by the placeholder."""
+        plugin = self._make_plugin(card_style="replace")
+
+        mock_loop = MagicMock()
+        mock_new_loop.return_value = mock_loop
+        mock_loop.run_until_complete.return_value = [
+            (
+                ("MicroPython", "https://micropython.org", "Python for MCUs"),
+                "OG Title",
+                "OG Description",
+                "https://micropython.org/img.png",
+            )
+        ]
+
+        md = "- [MicroPython](https://micropython.org) - Python for MCUs"
+        result = plugin.on_page_markdown(md)
+
+        # The original line should NOT be present
+        assert "- [MicroPython]" not in result
+        # A UUID placeholder should replace it
+        assert re.search(r"\{[0-9a-f]{32}\}", result)
+        assert len(plugin.social_cards) == 1
+
+    @patch("mkdocs_awesome_list_plugin.awesomelist._fetch_all_previews", new_callable=MagicMock)
+    @patch("mkdocs_awesome_list_plugin.awesomelist.asyncio.set_event_loop")
+    @patch("mkdocs_awesome_list_plugin.awesomelist.asyncio.new_event_loop")
+    def test_replace_mode_uses_entry_text_not_og(self, mock_new_loop, _mock_set, _mock_fetch):
+        """In replace mode, the card uses the awesome-list name/desc, not OG metadata."""
+        plugin = self._make_plugin(card_style="replace")
+
+        mock_loop = MagicMock()
+        mock_new_loop.return_value = mock_loop
+        mock_loop.run_until_complete.return_value = [
+            (
+                ("MyProject", "https://example.com", "My description"),
+                "OG Title",
+                "OG Description",
+                "https://example.com/img.png",
+            )
+        ]
+
+        md = "- [MyProject](https://example.com) - My description"
+        plugin.on_page_markdown(md)
+
+        card_html = list(plugin.social_cards.values())[0]
+        assert "MyProject" in card_html
+        assert "My description" in card_html
+        assert "OG Title" not in card_html
+        assert "OG Description" not in card_html
+
+    @patch("mkdocs_awesome_list_plugin.awesomelist._fetch_all_previews", new_callable=MagicMock)
+    @patch("mkdocs_awesome_list_plugin.awesomelist.asyncio.set_event_loop")
+    @patch("mkdocs_awesome_list_plugin.awesomelist.asyncio.new_event_loop")
+    def test_replace_mode_multiple_entries(self, mock_new_loop, _mock_set, _mock_fetch):
+        """Multiple entries in replace mode are all replaced."""
+        plugin = self._make_plugin(card_style="replace")
+
+        mock_loop = MagicMock()
+        mock_new_loop.return_value = mock_loop
+        mock_loop.run_until_complete.return_value = [
+            (
+                ("Project A", "https://a.example.com", "Description A"),
+                "OG A",
+                "OG Desc A",
+                None,
+            ),
+            (
+                ("Project B", "https://b.example.com", "Description B"),
+                "OG B",
+                "OG Desc B",
+                "https://b.example.com/img.png",
+            ),
+        ]
+
+        md = (
+            "- [Project A](https://a.example.com) - Description A\n"
+            "- [Project B](https://b.example.com) - Description B"
+        )
+        result = plugin.on_page_markdown(md)
+
+        placeholders = re.findall(r"\{[0-9a-f]{32}\}", result)
+        assert len(placeholders) == 2
+        assert len(plugin.social_cards) == 2
+        # Original lines should be gone
+        assert "- [Project A]" not in result
+        assert "- [Project B]" not in result
 
 
 # ---------------------------------------------------------------------------
