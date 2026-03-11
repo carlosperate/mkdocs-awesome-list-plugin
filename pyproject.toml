@@ -1,7 +1,7 @@
 [project]
-name = "MkDocsAwesomeListPlugin"
+name = "mkdocs-awesomelist"
 version = "0.1.0"
-description = "MkDocs Plugin to inject social media cards for each entry in an awesome-list."
+description = "MkDocs Plugin to inject social media cards for each entry in an Awesome List."
 readme = "README.md"
 requires-python = ">=3.8"
 license = "MIT"
@@ -32,11 +32,11 @@ dev = ["pytest"]
 Homepage = "https://github.com/carlosperate/mkdocs-awesome-list-plugin"
 
 [project.entry-points."mkdocs.plugins"]
-awesome-list = "mkdocs_awesome_list_plugin.awesomelist:AwesomeList"
+awesome-list = "mkdocs_awesomelist:AwesomeList"
 
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["mkdocs_awesome_list_plugin"]
+packages = ["mkdocs_awesomelist"]

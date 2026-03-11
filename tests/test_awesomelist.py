@@ -6,7 +6,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from mkdocs_awesome_list_plugin.awesomelist import (
+from mkdocs_awesomelist.awesomelist import (
     _resolve_and_validate_image,
     AwesomeList,
     HTML,
@@ -35,7 +35,7 @@ class TestResolveAndValidateImage:
         url = "https://cdn.example.com/img.png"
         assert _resolve_and_validate_image(url, "https://example.com") == url
 
-    @patch("mkdocs_awesome_list_plugin.awesomelist.requests.head")
+    @patch("mkdocs_awesomelist.awesomelist.requests.head")
     def test_protocol_relative(self, mock_head):
         mock_head.return_value = MagicMock(status_code=200)
         result = _resolve_and_validate_image(
@@ -43,7 +43,7 @@ class TestResolveAndValidateImage:
         )
         assert result == "https://cdn.example.com/img.png"
 
-    @patch("mkdocs_awesome_list_plugin.awesomelist.requests.head")
+    @patch("mkdocs_awesomelist.awesomelist.requests.head")
     def test_absolute_path_resolved(self, mock_head):
         mock_head.return_value = MagicMock(status_code=200)
         result = _resolve_and_validate_image(
@@ -51,7 +51,7 @@ class TestResolveAndValidateImage:
         )
         assert result == "https://example.com/assets/img.png"
 
-    @patch("mkdocs_awesome_list_plugin.awesomelist.requests.head")
+    @patch("mkdocs_awesomelist.awesomelist.requests.head")
     def test_relative_path_resolved(self, mock_head):
         mock_head.return_value = MagicMock(status_code=200)
         result = _resolve_and_validate_image(
@@ -59,7 +59,7 @@ class TestResolveAndValidateImage:
         )
         assert result == "https://example.com/page/img.png"
 
-    @patch("mkdocs_awesome_list_plugin.awesomelist.requests.head")
+    @patch("mkdocs_awesomelist.awesomelist.requests.head")
     def test_head_404_returns_none(self, mock_head):
         mock_head.return_value = MagicMock(status_code=404)
         result = _resolve_and_validate_image(
@@ -67,7 +67,7 @@ class TestResolveAndValidateImage:
         )
         assert result is None
 
-    @patch("mkdocs_awesome_list_plugin.awesomelist.requests.head")
+    @patch("mkdocs_awesomelist.awesomelist.requests.head")
     def test_head_network_error_returns_none(self, mock_head):
         mock_head.side_effect = Exception("connection refused")
         result = _resolve_and_validate_image(
@@ -99,9 +99,9 @@ class TestOnPageMarkdown:
         md = "- plain item without a link\n- another one"
         assert plugin.on_page_markdown(md) == md
 
-    @patch("mkdocs_awesome_list_plugin.awesomelist._fetch_all_previews", new_callable=MagicMock)
-    @patch("mkdocs_awesome_list_plugin.awesomelist.asyncio.set_event_loop")
-    @patch("mkdocs_awesome_list_plugin.awesomelist.asyncio.new_event_loop")
+    @patch("mkdocs_awesomelist.awesomelist._fetch_all_previews", new_callable=MagicMock)
+    @patch("mkdocs_awesomelist.awesomelist.asyncio.set_event_loop")
+    @patch("mkdocs_awesomelist.awesomelist.asyncio.new_event_loop")
     def test_single_entry_injects_placeholder(self, mock_new_loop, _mock_set, _mock_fetch):
         """A matching awesome-list line gets a UUID placeholder appended."""
         plugin = self._make_plugin()
@@ -128,9 +128,9 @@ class TestOnPageMarkdown:
         # Plugin should have stored the rendered card
         assert len(plugin.social_cards) == 1
 
-    @patch("mkdocs_awesome_list_plugin.awesomelist._fetch_all_previews", new_callable=MagicMock)
-    @patch("mkdocs_awesome_list_plugin.awesomelist.asyncio.set_event_loop")
-    @patch("mkdocs_awesome_list_plugin.awesomelist.asyncio.new_event_loop")
+    @patch("mkdocs_awesomelist.awesomelist._fetch_all_previews", new_callable=MagicMock)
+    @patch("mkdocs_awesomelist.awesomelist.asyncio.set_event_loop")
+    @patch("mkdocs_awesomelist.awesomelist.asyncio.new_event_loop")
     def test_multiple_entries(self, mock_new_loop, _mock_set, _mock_fetch):
         """Multiple awesome-list lines each get their own placeholder."""
         plugin = self._make_plugin()
@@ -162,9 +162,9 @@ class TestOnPageMarkdown:
         assert len(placeholders) == 2
         assert len(plugin.social_cards) == 2
 
-    @patch("mkdocs_awesome_list_plugin.awesomelist._fetch_all_previews", new_callable=MagicMock)
-    @patch("mkdocs_awesome_list_plugin.awesomelist.asyncio.set_event_loop")
-    @patch("mkdocs_awesome_list_plugin.awesomelist.asyncio.new_event_loop")
+    @patch("mkdocs_awesomelist.awesomelist._fetch_all_previews", new_callable=MagicMock)
+    @patch("mkdocs_awesomelist.awesomelist.asyncio.set_event_loop")
+    @patch("mkdocs_awesomelist.awesomelist.asyncio.new_event_loop")
     def test_no_image_hides_img_style(self, mock_new_loop, _mock_set, _mock_fetch):
         """When no image is available, img_style should contain 'display: none'."""
         plugin = self._make_plugin()
@@ -186,9 +186,9 @@ class TestOnPageMarkdown:
         card_html = list(plugin.social_cards.values())[0]
         assert "display: none" in card_html
 
-    @patch("mkdocs_awesome_list_plugin.awesomelist._fetch_all_previews", new_callable=MagicMock)
-    @patch("mkdocs_awesome_list_plugin.awesomelist.asyncio.set_event_loop")
-    @patch("mkdocs_awesome_list_plugin.awesomelist.asyncio.new_event_loop")
+    @patch("mkdocs_awesomelist.awesomelist._fetch_all_previews", new_callable=MagicMock)
+    @patch("mkdocs_awesomelist.awesomelist.asyncio.set_event_loop")
+    @patch("mkdocs_awesomelist.awesomelist.asyncio.new_event_loop")
     def test_fetch_exception_skips_entry(self, mock_new_loop, _mock_set, _mock_fetch):
         """If a preview fetch raises, the entry is skipped gracefully."""
         plugin = self._make_plugin()
@@ -206,9 +206,9 @@ class TestOnPageMarkdown:
         assert not re.search(r"\{[0-9a-f]{32}\}", result)
         assert len(plugin.social_cards) == 0
 
-    @patch("mkdocs_awesome_list_plugin.awesomelist._fetch_all_previews", new_callable=MagicMock)
-    @patch("mkdocs_awesome_list_plugin.awesomelist.asyncio.set_event_loop")
-    @patch("mkdocs_awesome_list_plugin.awesomelist.asyncio.new_event_loop")
+    @patch("mkdocs_awesomelist.awesomelist._fetch_all_previews", new_callable=MagicMock)
+    @patch("mkdocs_awesomelist.awesomelist.asyncio.set_event_loop")
+    @patch("mkdocs_awesomelist.awesomelist.asyncio.new_event_loop")
     def test_fallback_title_and_description(self, mock_new_loop, _mock_set, _mock_fetch):
         """When fetched title/description are empty, use the markdown values."""
         plugin = self._make_plugin()
@@ -231,9 +231,9 @@ class TestOnPageMarkdown:
         assert "FallbackName" in card_html
         assert "Fallback desc" in card_html
 
-    @patch("mkdocs_awesome_list_plugin.awesomelist._fetch_all_previews", new_callable=MagicMock)
-    @patch("mkdocs_awesome_list_plugin.awesomelist.asyncio.set_event_loop")
-    @patch("mkdocs_awesome_list_plugin.awesomelist.asyncio.new_event_loop")
+    @patch("mkdocs_awesomelist.awesomelist._fetch_all_previews", new_callable=MagicMock)
+    @patch("mkdocs_awesomelist.awesomelist.asyncio.set_event_loop")
+    @patch("mkdocs_awesomelist.awesomelist.asyncio.new_event_loop")
     def test_replace_mode_removes_original_line(self, mock_new_loop, _mock_set, _mock_fetch):
         """In replace mode, the original awesome-list line is replaced by the placeholder."""
         plugin = self._make_plugin(card_style="replace")
@@ -258,9 +258,9 @@ class TestOnPageMarkdown:
         assert re.search(r"\{[0-9a-f]{32}\}", result)
         assert len(plugin.social_cards) == 1
 
-    @patch("mkdocs_awesome_list_plugin.awesomelist._fetch_all_previews", new_callable=MagicMock)
-    @patch("mkdocs_awesome_list_plugin.awesomelist.asyncio.set_event_loop")
-    @patch("mkdocs_awesome_list_plugin.awesomelist.asyncio.new_event_loop")
+    @patch("mkdocs_awesomelist.awesomelist._fetch_all_previews", new_callable=MagicMock)
+    @patch("mkdocs_awesomelist.awesomelist.asyncio.set_event_loop")
+    @patch("mkdocs_awesomelist.awesomelist.asyncio.new_event_loop")
     def test_replace_mode_uses_entry_text_not_og(self, mock_new_loop, _mock_set, _mock_fetch):
         """In replace mode, the card uses the awesome-list name/desc, not OG metadata."""
         plugin = self._make_plugin(card_style="replace")
@@ -285,9 +285,9 @@ class TestOnPageMarkdown:
         assert "OG Title" not in card_html
         assert "OG Description" not in card_html
 
-    @patch("mkdocs_awesome_list_plugin.awesomelist._fetch_all_previews", new_callable=MagicMock)
-    @patch("mkdocs_awesome_list_plugin.awesomelist.asyncio.set_event_loop")
-    @patch("mkdocs_awesome_list_plugin.awesomelist.asyncio.new_event_loop")
+    @patch("mkdocs_awesomelist.awesomelist._fetch_all_previews", new_callable=MagicMock)
+    @patch("mkdocs_awesomelist.awesomelist.asyncio.set_event_loop")
+    @patch("mkdocs_awesomelist.awesomelist.asyncio.new_event_loop")
     def test_replace_mode_multiple_entries(self, mock_new_loop, _mock_set, _mock_fetch):
         """Multiple entries in replace mode are all replaced."""
         plugin = self._make_plugin(card_style="replace")
