@@ -13,7 +13,14 @@
     padding: 0;
 }
 
+/* Items that don't start with a link aren't entries, and keep a plain bullet */
+.awesome-list > li:not(.awesome-entry) {
+    list-style: disc;
+    margin-left: 1.5em;
+}
+
 .awesome-entry {
+    position: relative;
     display: grid;
     column-gap: 16px;
     /* Long names and domains would otherwise overflow narrow screens */
@@ -30,6 +37,27 @@
 
 .awesome-entry__title {
     font-weight: 600;
+}
+
+/* Stretched over the entry, so the whole card is one click target */
+.awesome-entry__title::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+}
+
+/* Links in the description and sub-entries stay clickable above it */
+.awesome-entry__desc a,
+.awesome-entry__subs a {
+    position: relative;
+    z-index: 1;
+}
+
+.awesome-entry__favicon {
+    width: 1em;
+    height: 1em;
+    margin-right: 0.35em;
+    vertical-align: -0.125em;
 }
 
 .awesome-entry__domain {
@@ -72,6 +100,7 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
+    container-type: inline-size;
 }
 
 .awesome-list--media .awesome-entry {
@@ -112,7 +141,8 @@
     width: auto;
     height: auto;
     max-width: 80%;
-    max-height: 60%;
+    /* 60% of the frame's height; WebKit ignores a percentage max-height in this frame */
+    max-height: calc(var(--awesome-list-media-width) / 1.91 * 0.6);
 }
 
 .awesome-list--media .awesome-entry__icon {
@@ -141,7 +171,8 @@
     font-size: 0.85em;
 }
 
-@media (max-width: 575.98px) {
+/* Narrow lists (phones, or tablets beside a sidebar) put the description under the image */
+@container (max-width: 599px) {
     .awesome-list--media .awesome-entry {
         --awesome-list-media-width: 112px;
         grid-template-rows: auto;
@@ -168,7 +199,8 @@
     border-bottom: 1px solid var(--awesome-list-border);
 }
 
-.awesome-list--index .awesome-entry__media {
+.awesome-list--index .awesome-entry__media,
+.awesome-list--index .awesome-entry__favicon {
     display: none;
 }
 

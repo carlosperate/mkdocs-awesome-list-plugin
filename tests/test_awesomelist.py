@@ -225,6 +225,18 @@ class TestRenderedEntries:
 
         assert 'src="../assets/awesome-list/favicons/example.com.png"' in html
 
+    def test_favicon_in_title(self):
+        plugin = _make_plugin()
+        plugin.previews["https://example.com"] = Preview()
+        plugin.favicons["example.com"] = b"png"
+        html = _render(plugin, "- [Example](https://example.com) - An example site.")
+
+        assert (
+            '<a class="awesome-entry__title" href="https://example.com"><img alt="" '
+            'class="awesome-entry__favicon" loading="lazy" '
+            'src="assets/awesome-list/favicons/example.com.png" />Example</a>'
+        ) in html
+
     def test_initial_when_no_favicon(self):
         plugin = _make_plugin()
         plugin.previews["https://example.com"] = Preview()
@@ -269,6 +281,29 @@ class TestRenderedEntries:
 
         assert '<span class="awesome-entry__sub-desc">Beta version.</span>' in html
         assert '<li><a href="https://a.example.com/beta/docs">A Beta Docs</a> - Docs.</li>' in html
+
+    def test_entry_without_description(self):
+        plugin = _make_plugin()
+        plugin.previews["https://a.example.com"] = Preview()
+        plugin.previews["https://b.example.com"] = Preview()
+        text = "- [A](https://a.example.com) - Entry A.\n- [B](https://b.example.com)\n"
+        html = _render(plugin, text)
+
+        assert html.count('<li class="awesome-entry" data-image="none">') == 2
+        assert html.count("awesome-entry__desc") == 1
+
+    def test_links_after_the_title_become_the_description(self):
+        plugin = _make_plugin()
+        plugin.previews["https://a.example.com"] = Preview()
+        html = _render(plugin, "- [A](https://a.example.com) [[Part 2](https://a.example.com/2)]\n")
+
+        assert '<span class="awesome-entry__desc">[<a href="https://a.example.com/2">Part 2</a>]</span>' in html
+
+    def test_image_links_are_not_entries(self):
+        plugin = _make_plugin()
+        plugin.previews["https://example.com"] = Preview()
+        text = "- [![badge](https://img.example.com/badge.svg)](https://example.com) Follow us.\n"
+        assert _render(plugin, text) == markdown.markdown(text)
 
     def test_loose_list(self):
         plugin = _make_plugin()
@@ -335,6 +370,19 @@ class TestOnPageMarkdown:
         assert set(plugin.previews) == {"https://example.com/a", "https://www.example.com/b"}
         assert plugin.favicons == {"example.com": b"png"}
         assert plugin.page_url == "about/"
+
+    def test_only_web_links_are_entries(self, mock_preview, mock_favicon):
+        mock_preview.return_value = Preview()
+        plugin = _make_plugin()
+        md = (
+            "- [![badge](https://img.example.com/badge.svg)](https://example.com/repo)\n"
+            "- [Section](#section)\n"
+            "- [Title only](https://example.com/title)\n"
+            "- [Spaced](https://example.com/spaced ) - Space before the bracket.\n"
+        )
+        plugin.on_page_markdown(md)
+
+        assert set(plugin.previews) == {"https://example.com/title", "https://example.com/spaced"}
 
     def test_urls_fetched_once(self, mock_preview, mock_favicon):
         mock_preview.return_value = Preview()

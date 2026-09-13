@@ -32,14 +32,16 @@ plugins:
 
 The plugin includes CSS for two styles:
 
-- `media`: a card per entry, with the preview image on the left.
+- `media`: a card per entry, with the preview image on the left. In lists narrower
+  than 600px the description goes under the image instead.
 - `index`: compact rows with the site's favicon, useful for long lists of repositories.
 
 Any other style name only adds its class, for a theme to style.
 
 ## Markup
 
-Entries are top-level list items written as `- [Name](url) - Description`.
+Entries are top-level list items that start with a web link, usually written as
+`- [Name](url) - Description` (the description is optional).
 The plugin keeps the list Markdown renders and adds classes and the fetched
 data to it:
 
@@ -49,7 +51,7 @@ data to it:
     <a class="awesome-entry__media" href="…"><img src="…"></a>
     <span class="awesome-entry__icon"><img src="…"></span>
     <span class="awesome-entry__header">
-      <a class="awesome-entry__title" href="…">Name</a>
+      <a class="awesome-entry__title" href="…"><img class="awesome-entry__favicon" src="…">Name</a>
       <span class="awesome-entry__domain">example.com</span>
     </span>
     <span class="awesome-entry__desc">Description</span>
@@ -67,7 +69,9 @@ data to it:
   image, or it couldn't be loaded). `awesome-entry__media` is only there when
   there is an image.
 - `awesome-entry__icon` holds the favicon, or the entry's initial when the
-  site has none.
+  site has none. The same favicon is also in the title, when there is one.
+- The default CSS stretches the title link over the entry, so the whole card is
+  one click target; other links in it stay clickable above it.
 - `awesome-entry__subs` holds the indented sub-entries, if any.
 
 The default stylesheet, `assets/awesome-list/awesome-list.css`, is added before

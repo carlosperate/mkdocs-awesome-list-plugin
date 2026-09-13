@@ -19,7 +19,8 @@ from mkdocs.utils import get_relative_url
 from PIL import Image
 from webpreview import web_preview
 
-ENTRY_RE = re.compile(r"^- \[(.*?)\]\((.*?)\) - (.+)$", re.MULTILINE)
+# A top-level item starting with a web link; image links (badges) and in-page links aren't entries
+ENTRY_RE = re.compile(r"^- \[(?!!)(.*?)\]\(\s*(https?://[^)\s]+)\s*\)", re.MULTILINE)
 ASSETS_DIR = "assets/awesome-list"
 CSS_FILE = "awesome-list.css"
 FAVICON_URL = "https://www.google.com/s2/favicons?domain={host}&sz=64"
@@ -139,7 +140,7 @@ def _add_class(element, name):
 
 
 def _entry_link(li):
-    """The link of a `[Name](url) - Description` item, or None."""
+    """The link an item starts with, unless it's an image link (a badge), or None."""
     container = li
     # Loose lists (blank lines between items) wrap each item's text in a <p>
     if len(li) and li[0].tag == "p" and not (li.text or "").strip():
@@ -147,7 +148,7 @@ def _entry_link(li):
     if (container.text or "").strip() or not len(container):
         return None
     link = container[0]
-    if link.tag != "a" or not (link.tail or "").startswith(" - "):
+    if link.tag != "a" or (not (link.text or "").strip() and len(link) and link[0].tag == "img"):
         return None
     return link
 
@@ -162,17 +163,20 @@ def _unwrap_paragraph(li):
 
 
 def _wrap_description(li, css_class):
-    """Move what follows `<a>Name</a> - ` into a span, up to any nested list."""
+    """Move what follows `<a>Name</a>` into a span, up to any nested list."""
     link = li[0]
+    tail = link.tail or ""
     desc = etree.Element("span", {"class": css_class})
-    desc.text = link.tail[3:]
+    desc.text = tail[3:] if tail.startswith(" - ") else tail.lstrip()
     link.tail = None
     for child in list(li)[1:]:
         if child.tag in ("ul", "ol"):
             break
         li.remove(child)
         desc.append(child)
-    li.insert(1, desc)
+    # The description is optional
+    if desc.text.strip() or len(desc):
+        li.insert(1, desc)
     return desc
 
 
@@ -222,6 +226,17 @@ class _EntryTreeprocessor(Treeprocessor):
                 self._process_sub_entries(child)
         li.remove(link)
 
+        icon = self._icon(url, link)
+        favicon = self._favicon_src(url)
+        if favicon:
+            img = etree.Element(
+                "img",
+                {"class": "awesome-entry__favicon", "src": favicon, "alt": "", "loading": "lazy"},
+            )
+            img.tail = link.text
+            link.text = None
+            link.insert(0, img)
+
         header = etree.Element("span", {"class": "awesome-entry__header"})
         _add_class(link, "awesome-entry__title")
         header.append(link)
@@ -231,7 +246,7 @@ class _EntryTreeprocessor(Treeprocessor):
         li.text = None
         li.set("class", "awesome-entry")
         li.set("data-image", preview.image_kind)
-        new_children = [self._icon(url, link), header]
+        new_children = [icon, header]
         if preview.image:
             new_children.insert(0, self._media(url, preview))
         for i, child in enumerate(new_children):
@@ -246,13 +261,18 @@ class _EntryTreeprocessor(Treeprocessor):
         etree.SubElement(media, "img", {"src": preview.image, "alt": "", "loading": "lazy"})
         return media
 
+    def _favicon_src(self, url):
+        host = _host(url)
+        if not self.plugin.favicons.get(host):
+            return None
+        path = f"{ASSETS_DIR}/favicons/{_favicon_filename(host)}"
+        return get_relative_url(path, self.plugin.page_url)
+
     def _icon(self, url, link):
         icon = etree.Element("span", {"class": "awesome-entry__icon", "aria-hidden": "true"})
-        host = _host(url)
-        if self.plugin.favicons.get(host):
-            path = f"{ASSETS_DIR}/favicons/{_favicon_filename(host)}"
-            src = get_relative_url(path, self.plugin.page_url)
-            etree.SubElement(icon, "img", {"src": src, "alt": "", "loading": "lazy"})
+        favicon = self._favicon_src(url)
+        if favicon:
+            etree.SubElement(icon, "img", {"src": favicon, "alt": "", "loading": "lazy"})
         else:
             icon.text = _plain_text(link)[:1].upper()
         return icon
@@ -266,7 +286,8 @@ class _EntryTreeprocessor(Treeprocessor):
                 continue
             _unwrap_paragraph(li)
             desc = _wrap_description(li, "awesome-entry__sub-desc")
-            link.set("title", _plain_text(desc))
+            if _plain_text(desc):
+                link.set("title", _plain_text(desc))
 
 
 class AwesomeListExtension(Extension):
