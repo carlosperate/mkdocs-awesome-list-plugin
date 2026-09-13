@@ -21,6 +21,8 @@ classifiers = [
 
 dependencies = [
   "mkdocs",
+  "Pillow",
+  "requests",
   "webpreview>=1.6.0",
 ]
 
@@ -41,3 +43,6 @@ awesome-list = "mkdocs_awesomelist:AwesomeList"
 
 [tool.setuptools]
 packages = ["mkdocs_awesomelist"]
+
+[tool.setuptools.package-data]
+mkdocs_awesomelist = ["css/*.css"]

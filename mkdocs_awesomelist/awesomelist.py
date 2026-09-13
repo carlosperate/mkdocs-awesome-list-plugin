@@ -1,193 +1,335 @@
+import io
+import os
 import re
+import shutil
 import sys
-import uuid
-import asyncio
+import time
+import xml.etree.ElementTree as etree
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import urlparse, urljoin
+from dataclasses import dataclass
+from typing import Optional
+from urllib.parse import urljoin, urlparse
 
 import requests
+from markdown.extensions import Extension
+from markdown.treeprocessors import Treeprocessor
 from mkdocs.config import config_options
 from mkdocs.plugins import BasePlugin
+from mkdocs.utils import get_relative_url
+from PIL import Image
 from webpreview import web_preview
 
-HTML = """
-<div style="
-    display: block;
-    max-height: 122px;
-    padding: 0px;
-    margin: 12px;
-    border-width: 1px;
-    border-color: #bfbfbf;
-    border-style: solid;
-    border-radius: 16px;
-    box-shadow: 0px 3px 6px rgb(0 0 0 / 7%);
-    overflow: hidden;
-    background-color: #fbfbfb;
-">
-    <div style="float: left; padding: 0; margin: 0; {img_style}">
-        <a href="{url}" target="_blank" style="border: none">
-            <img src="{image}" style="height: 120px; max-width: 150px; object-fit: cover; padding: 0; margin: 0; border: none; margin-right: 16px;">
-        </a>
-    </div>
-    <div style="margin: 8px 24px; line-height: 1.2;">
-        <a href="{url}" target="_blank"><span style="font-weight: bold; line-height: 1.8;">{title}</span></a>
-        <br>
-        <span style="font-size: calc(100% - 1px); line-height: 1.5;">{description}</span>
-    </div>
-</div>
-"""
+ENTRY_RE = re.compile(r"^- \[(.*?)\]\((.*?)\) - (.+)$", re.MULTILINE)
+ASSETS_DIR = "assets/awesome-list"
+CSS_FILE = "awesome-list.css"
+FAVICON_URL = "https://www.google.com/s2/favicons?domain={host}&sz=64"
+HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; mkdocs-awesomelist)"}
+# Enough for Pillow to read the dimensions; images with bigger headers aren't logos anyway
+IMAGE_PROBE_BYTES = 64 * 1024
+CODE_HOSTS = ("github.com", "gitlab.com")
 
 
-def _resolve_and_validate_image(image, page_url):
-    """Resolve relative/absolute image URLs and validate they exist."""
+@dataclass
+class Preview:
+    image: Optional[str] = None
+    # "picture", "logo" or "none"; tells the theme how to frame the image
+    image_kind: str = "none"
+
+
+def _resolve_image_url(image, page_url):
+    """Return the image as an absolute URL, or None."""
     if not image:
         return None
-    parsed = urlparse(image)
-    # Fully qualified URL (http/https) — keep as-is
-    if parsed.scheme in ("http", "https"):
-        return image
-    # Protocol-relative (//cdn.example.com/...)
     if image.startswith("//"):
-        image = "https:" + image
-    # Absolute path (/assets/img/...) or relative path
-    else:
-        image = urljoin(page_url, image)
-    # Verify the resolved image URL exists
+        return "https:" + image
+    return urljoin(page_url, image)
+
+
+def _image_kind(width, height):
+    """Small images are logos, shown at their own size; anything else is a picture."""
+    return "logo" if max(width, height) <= 200 else "picture"
+
+
+def _get_image(image_url):
+    """Stream an image, backing off when rate limited (GitHub's OG images often are)."""
+    for delay in (1, 2, 4):
+        resp = requests.get(image_url, timeout=10, stream=True, headers=HEADERS)
+        if resp.status_code != 429:
+            return resp
+        resp.close()
+        time.sleep(delay)
+    return requests.get(image_url, timeout=10, stream=True, headers=HEADERS)
+
+
+def _probe_image(image_url):
+    """Return the image kind, or None if it can't be loaded."""
     try:
-        resp = requests.head(image, timeout=5, allow_redirects=True)
-        if resp.status_code < 400:
-            return image
-        print(f"\n  WARNING: Image returned {resp.status_code}: {image}")
+        with _get_image(image_url) as resp:
+            if resp.status_code >= 400:
+                print(f"\n  WARNING: Image returned {resp.status_code}: {image_url}")
+                return None
+            content_type = resp.headers.get("Content-Type", "")
+            data = resp.raw.read(IMAGE_PROBE_BYTES, decode_content=True)
     except Exception as e:
-        print(f"\n  WARNING: Could not reach image: {image} ({e})")
-    return None
+        print(f"\n  WARNING: Could not reach image: {image_url} ({e})")
+        return None
+    if not data:
+        print(f"\n  WARNING: Empty image: {image_url}")
+        return None
+    if "svg" in content_type:
+        # Browsers won't render a broken SVG, and some sites serve one
+        if not data.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"<"):
+            print(f"\n  WARNING: Invalid SVG image: {image_url}")
+            return None
+        return "logo"
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            return _image_kind(*img.size)
+    except Exception:
+        # Pillow can't read every format a browser can (e.g. AVIF)
+        return "picture" if content_type.startswith("image/") else None
 
 
-async def _fetch_preview(entry, executor):
-    """Fetch a single web preview in a thread executor."""
-    loop = asyncio.get_running_loop()
-    name, url, desc = entry
-    title, description, image = await loop.run_in_executor(
-        executor, lambda: web_preview(url, timeout=10)
-    )
-    image = _resolve_and_validate_image(image, url)
-    return (entry, title, description, image)
+def _fetch_preview(url):
+    """Fetch the OpenGraph image of a page and work out how to frame it."""
+    try:
+        _title, _description, image = web_preview(url, timeout=10)
+        image = _resolve_image_url(image, url)
+    except Exception as e:
+        print(f"\n[AwesomeList] Error fetching preview for {url}: {e}")
+        return Preview()
+    kind = _probe_image(image) if image else None
+    return Preview(image, kind) if kind else Preview()
 
 
-async def _fetch_all_previews(entries):
-    """Fetch all web previews in parallel using a thread pool."""
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        tasks = [
-            asyncio.ensure_future(_fetch_preview(entry, executor))
-            for entry in entries
-        ]
-        return await asyncio.gather(*tasks, return_exceptions=True)
+def _fetch_favicon(host):
+    """Return the site's favicon as PNG bytes, or None."""
+    try:
+        resp = requests.get(FAVICON_URL.format(host=host), timeout=10, headers=HEADERS)
+    except Exception:
+        return None
+    # The service answers 404 with a generic globe when a site has no favicon
+    if resp.status_code >= 400 or not resp.content:
+        return None
+    return resp.content
+
+
+def _host(url):
+    host = urlparse(url).hostname or ""
+    return host[4:] if host.startswith("www.") else host
+
+
+def _domain_label(url):
+    """Host without "www.", plus the owner for code-hosting sites."""
+    host = _host(url)
+    if host in CODE_HOSTS:
+        owner = urlparse(url).path.strip("/").split("/")[0]
+        if owner:
+            return f"{host}/{owner}"
+    return host
+
+
+def _favicon_filename(host):
+    return re.sub(r"[^a-z0-9.-]", "_", host.lower()) + ".png"
+
+
+def _add_class(element, name):
+    classes = element.get("class")
+    element.set("class", f"{classes} {name}" if classes else name)
+
+
+def _entry_link(li):
+    """The link of a `[Name](url) - Description` item, or None."""
+    container = li
+    # Loose lists (blank lines between items) wrap each item's text in a <p>
+    if len(li) and li[0].tag == "p" and not (li.text or "").strip():
+        container = li[0]
+    if (container.text or "").strip() or not len(container):
+        return None
+    link = container[0]
+    if link.tag != "a" or not (link.tail or "").startswith(" - "):
+        return None
+    return link
+
+
+def _unwrap_paragraph(li):
+    if len(li) and li[0].tag == "p" and not (li.text or "").strip():
+        p = li[0]
+        li.remove(p)
+        li.text = p.text
+        for i, child in enumerate(p):
+            li.insert(i, child)
+
+
+def _wrap_description(li, css_class):
+    """Move what follows `<a>Name</a> - ` into a span, up to any nested list."""
+    link = li[0]
+    desc = etree.Element("span", {"class": css_class})
+    desc.text = link.tail[3:]
+    link.tail = None
+    for child in list(li)[1:]:
+        if child.tag in ("ul", "ol"):
+            break
+        li.remove(child)
+        desc.append(child)
+    li.insert(1, desc)
+    return desc
+
+
+def _plain_text(element):
+    """Text content with Python-Markdown's inline placeholders resolved or dropped."""
+    text = "".join(element.itertext())
+    text = re.sub("\x02(\\d+)\x03", lambda m: chr(int(m.group(1))), text)
+    return re.sub("\x02.*?\x03", "", text).strip()
+
+
+class _EntryTreeprocessor(Treeprocessor):
+    def __init__(self, md, plugin):
+        super().__init__(md)
+        self.plugin = plugin
+
+    def run(self, root):
+        default_style = self.plugin.config["default-style"]
+        section_styles = self.plugin.config["section-styles"]
+        style = default_style
+        for element in root:
+            if re.fullmatch(r"h[1-6]", element.tag):
+                style = section_styles.get(element.get("id"), default_style)
+            elif element.tag == "ul":
+                self._process_list(element, style)
+
+    def _process_list(self, ul, style):
+        found = False
+        for li in ul:
+            if li.tag == "li" and self._process_entry(li):
+                found = True
+        if found:
+            _add_class(ul, "awesome-list")
+            _add_class(ul, f"awesome-list--{style}")
+
+    def _process_entry(self, li):
+        """Turn `<a>Name</a> - Description` into the card markup."""
+        link = _entry_link(li)
+        preview = None if link is None else self.plugin.previews.get(link.get("href"))
+        if preview is None:
+            return False
+        url = link.get("href")
+
+        _unwrap_paragraph(li)
+        _wrap_description(li, "awesome-entry__desc")
+        for child in li:
+            if child.tag in ("ul", "ol"):
+                self._process_sub_entries(child)
+        li.remove(link)
+
+        header = etree.Element("span", {"class": "awesome-entry__header"})
+        _add_class(link, "awesome-entry__title")
+        header.append(link)
+        domain = etree.SubElement(header, "span", {"class": "awesome-entry__domain"})
+        domain.text = _domain_label(url)
+
+        li.text = None
+        li.set("class", "awesome-entry")
+        li.set("data-image", preview.image_kind)
+        new_children = [self._icon(url, link), header]
+        if preview.image:
+            new_children.insert(0, self._media(url, preview))
+        for i, child in enumerate(new_children):
+            li.insert(i, child)
+        return True
+
+    def _media(self, url, preview):
+        media = etree.Element(
+            "a",
+            {"class": "awesome-entry__media", "href": url, "tabindex": "-1", "aria-hidden": "true"},
+        )
+        etree.SubElement(media, "img", {"src": preview.image, "alt": "", "loading": "lazy"})
+        return media
+
+    def _icon(self, url, link):
+        icon = etree.Element("span", {"class": "awesome-entry__icon", "aria-hidden": "true"})
+        host = _host(url)
+        if self.plugin.favicons.get(host):
+            path = f"{ASSETS_DIR}/favicons/{_favicon_filename(host)}"
+            src = get_relative_url(path, self.plugin.page_url)
+            etree.SubElement(icon, "img", {"src": src, "alt": "", "loading": "lazy"})
+        else:
+            icon.text = _plain_text(link)[:1].upper()
+        return icon
+
+    def _process_sub_entries(self, sub_list):
+        _add_class(sub_list, "awesome-entry__subs")
+        for li in sub_list:
+            _add_class(li, "awesome-entry__sub")
+            link = _entry_link(li)
+            if link is None:
+                continue
+            _unwrap_paragraph(li)
+            desc = _wrap_description(li, "awesome-entry__sub-desc")
+            link.set("title", _plain_text(desc))
+
+
+class AwesomeListExtension(Extension):
+    def __init__(self, plugin):
+        super().__init__()
+        self.plugin = plugin
+
+    def extendMarkdown(self, md):
+        # After "toc" (5) so headings have ids, and after MkDocs' "relpath" (0), which would
+        # warn about the favicon paths as they aren't documentation files
+        md.treeprocessors.register(_EntryTreeprocessor(md, self.plugin), "awesome_list", -1)
 
 
 class AwesomeList(BasePlugin):
 
     config_scheme = (
         ("debug-log", config_options.Type(bool, default=False)),
-        ("card-style", config_options.Choice(("append", "replace"), default="append")),
+        ("default-style", config_options.Type(str, default="media")),
+        ("section-styles", config_options.Type(dict, default={})),
     )
 
     def __init__(self):
         super().__init__()
-        self.social_cards = {}
+        self.previews = {}
+        self.favicons = {}
+        self.page_url = ""
 
-    def on_page_markdown(self, markdown, **kwargs):
-        # Collect all link matches first
-        matches = list(
-            re.finditer(r"^- \[(.*?)\]\((.*?)\) - (.+)$", markdown, re.MULTILINE)
-        )
-        if not matches:
+    def on_config(self, config):
+        config.markdown_extensions.append(AwesomeListExtension(self))
+        # First, so the theme's and the user's CSS can override it
+        config.extra_css.insert(0, f"{ASSETS_DIR}/{CSS_FILE}")
+        return config
+
+    def on_page_markdown(self, markdown, page=None, **kwargs):
+        self.page_url = page.url if page else ""
+        urls = {m.group(2) for m in ENTRY_RE.finditer(markdown)}.difference(self.previews)
+        hosts = {_host(url) for url in urls}.difference(self.favicons)
+        if not urls:
             return markdown
 
-        # Build the list of entries to fetch (name, url, description)
-        entries = []
-        for match in matches:
-            items = match.groups()
-            entries.append((items[0], items[1], items[2]))
-
-        # Fetch all web previews in parallel
-        print(f"\n[AwesomeList] Fetching {len(entries)} social cards...", end=" ")
+        print(f"\n[AwesomeList] Fetching {len(urls)} previews...", end=" ")
         sys.stdout.flush()
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            results = loop.run_until_complete(_fetch_all_previews(entries))
-        finally:
-            loop.close()
-
-        # Map url -> fetched card data (or None on error)
-        card_data = {}
-        for result in results:
-            if isinstance(result, Exception):
-                print(f"\n[AwesomeList] Error fetching preview: {result}")
-                continue
-            entry, title, description, image = result
-            card_data[entry[1]] = (title, description, image)
-            if self.config["debug-log"]:
-                print(f"\n  [{entry[0]}]")
-                print(f"    URL:   {entry[1]}")
-                print(f"    Title: {title}")
-                print(f"    Desc:  {description}")
-                print(f"    Image: {image}")
-            sys.stdout.flush()
+        urls, hosts = sorted(urls), sorted(hosts)
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            previews = executor.map(_fetch_preview, urls)
+            favicons = executor.map(_fetch_favicon, hosts)
+            self.previews.update(zip(urls, previews))
+            self.favicons.update(zip(hosts, favicons))
         print()
 
-        # Inject social card placeholders into the markdown
-        replace_mode = self.config.get("card-style", "append") == "replace"
-        copy = markdown
-        extra_characters = 0
-        for match in matches:
-            start_char = match.span()[0]
-            end_char = match.span()[1]
-            items = match.groups()
-            url = items[1]
+        if self.config["debug-log"]:
+            for url in urls:
+                preview = self.previews[url]
+                print(f"  {url}\n    Image: {preview.image} ({preview.image_kind})")
+        return markdown
 
-            if url not in card_data:
-                continue
-
-            title, description, image = card_data[url]
-            if replace_mode:
-                # Use the awesome-list entry text, not the OG metadata
-                card_options = {
-                    "title": items[0],
-                    "description": items[2],
-                    "url": url,
-                }
-            else:
-                # Use the OG metadata title and description
-                card_options = {
-                    "title": title or items[0],
-                    "description": description or items[2],
-                    "url": url,
-                }
-            if not image:
-                card_options["img_style"] = "display: none"
-                card_options["image"] = ""
-            else:
-                card_options["img_style"] = ""
-                card_options["image"] = image
-
-            uniqueId = uuid.uuid4().hex
-            self.social_cards[uniqueId] = HTML.format(**card_options)
-            injected_str = '{' + uniqueId + '}'
-
-            if replace_mode:
-                # Replace the entire awesome-list line with the placeholder
-                adj_start = start_char + extra_characters
-                adj_end = end_char + extra_characters
-                copy = copy[:adj_start] + injected_str + copy[adj_end:]
-                extra_characters += len(injected_str) - (end_char - start_char)
-            else:
-                # Append the placeholder after the line
-                adj_end = end_char + extra_characters
-                copy = copy[:adj_end] + injected_str + copy[adj_end:]
-                extra_characters += len(injected_str)
-
-        return copy
-
-    def on_page_content(self, html, page, config, **kwargs):
-        return html.format(**self.social_cards)
+    def on_post_build(self, config):
+        assets_dir = os.path.join(config.site_dir, *ASSETS_DIR.split("/"))
+        favicons_dir = os.path.join(assets_dir, "favicons")
+        os.makedirs(favicons_dir, exist_ok=True)
+        css_src = os.path.join(os.path.dirname(__file__), "css", CSS_FILE)
+        shutil.copyfile(css_src, os.path.join(assets_dir, CSS_FILE))
+        for host, data in self.favicons.items():
+            if data:
+                with open(os.path.join(favicons_dir, _favicon_filename(host)), "wb") as f:
+                    f.write(data)

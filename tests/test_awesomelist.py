@@ -1,371 +1,367 @@
 """Tests for the AwesomeList MkDocs plugin."""
 
-import re
-import uuid
-from unittest.mock import patch, MagicMock
+import io
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
+import markdown
 import pytest
+import requests
+from PIL import Image
 
 from mkdocs_awesomelist.awesomelist import (
-    _resolve_and_validate_image,
     AwesomeList,
-    HTML,
+    AwesomeListExtension,
+    Preview,
+    _domain_label,
+    _fetch_preview,
+    _image_kind,
+    _probe_image,
+    _resolve_image_url,
 )
 
 
+def _png_bytes(width, height):
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height)).save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+def _image_response(status=200, content_type="image/png", body=b""):
+    resp = MagicMock(status_code=status, headers={"Content-Type": content_type})
+    resp.raw.read.return_value = body
+    resp.__enter__.return_value = resp
+    return resp
+
+
+def _make_plugin(default_style="media", section_styles=None):
+    plugin = AwesomeList()
+    plugin.config = {
+        "debug-log": False,
+        "default-style": default_style,
+        "section-styles": section_styles or {},
+    }
+    return plugin
+
+
+def _render(plugin, text):
+    return markdown.markdown(text, extensions=["toc", AwesomeListExtension(plugin)])
+
+
 # ---------------------------------------------------------------------------
-# _resolve_and_validate_image
+# Image helpers
 # ---------------------------------------------------------------------------
 
 
-class TestResolveAndValidateImage:
-    """Tests for the image URL resolution helper."""
+class TestResolveImageUrl:
 
-    def test_none_input(self):
-        assert _resolve_and_validate_image(None, "https://example.com") is None
+    @pytest.mark.parametrize("image", [None, ""])
+    def test_no_image(self, image):
+        assert _resolve_image_url(image, "https://example.com") is None
 
-    def test_empty_string(self):
-        assert _resolve_and_validate_image("", "https://example.com") is None
-
-    def test_fully_qualified_http(self):
+    def test_absolute_url_kept(self):
         url = "http://cdn.example.com/img.png"
-        assert _resolve_and_validate_image(url, "https://example.com") == url
+        assert _resolve_image_url(url, "https://example.com") == url
 
-    def test_fully_qualified_https(self):
-        url = "https://cdn.example.com/img.png"
-        assert _resolve_and_validate_image(url, "https://example.com") == url
-
-    @patch("mkdocs_awesomelist.awesomelist.requests.head")
-    def test_protocol_relative(self, mock_head):
-        mock_head.return_value = MagicMock(status_code=200)
-        result = _resolve_and_validate_image(
-            "//cdn.example.com/img.png", "https://example.com"
-        )
+    def test_protocol_relative(self):
+        result = _resolve_image_url("//cdn.example.com/img.png", "https://example.com")
         assert result == "https://cdn.example.com/img.png"
 
-    @patch("mkdocs_awesomelist.awesomelist.requests.head")
-    def test_absolute_path_resolved(self, mock_head):
-        mock_head.return_value = MagicMock(status_code=200)
-        result = _resolve_and_validate_image(
-            "/assets/img.png", "https://example.com/page"
-        )
+    def test_absolute_path(self):
+        result = _resolve_image_url("/assets/img.png", "https://example.com/page")
         assert result == "https://example.com/assets/img.png"
 
-    @patch("mkdocs_awesomelist.awesomelist.requests.head")
-    def test_relative_path_resolved(self, mock_head):
-        mock_head.return_value = MagicMock(status_code=200)
-        result = _resolve_and_validate_image(
-            "img.png", "https://example.com/page/"
-        )
+    def test_relative_path(self):
+        result = _resolve_image_url("img.png", "https://example.com/page/")
         assert result == "https://example.com/page/img.png"
 
-    @patch("mkdocs_awesomelist.awesomelist.requests.head")
-    def test_head_404_returns_none(self, mock_head):
-        mock_head.return_value = MagicMock(status_code=404)
-        result = _resolve_and_validate_image(
-            "/missing.png", "https://example.com"
-        )
-        assert result is None
 
-    @patch("mkdocs_awesomelist.awesomelist.requests.head")
-    def test_head_network_error_returns_none(self, mock_head):
-        mock_head.side_effect = Exception("connection refused")
-        result = _resolve_and_validate_image(
-            "/fail.png", "https://example.com"
-        )
-        assert result is None
+class TestImageKind:
+
+    @pytest.mark.parametrize(
+        "size, kind",
+        [
+            ((1200, 630), "picture"),
+            ((2100, 1750), "picture"),
+            ((600, 600), "picture"),
+            ((153, 232), "picture"),
+            ((180, 180), "logo"),
+            ((64, 64), "logo"),
+        ],
+    )
+    def test_kind(self, size, kind):
+        assert _image_kind(*size) == kind
+
+
+@patch("mkdocs_awesomelist.awesomelist.requests.get")
+class TestProbeImage:
+
+    def test_wide_image_is_picture(self, mock_get):
+        mock_get.return_value = _image_response(body=_png_bytes(1200, 630))
+        assert _probe_image("https://example.com/og.png") == "picture"
+
+    def test_small_image_is_logo(self, mock_get):
+        mock_get.return_value = _image_response(body=_png_bytes(180, 180))
+        assert _probe_image("https://example.com/icon.png") == "logo"
+
+    def test_svg_is_logo(self, mock_get):
+        body = b'\n<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"></svg>'
+        mock_get.return_value = _image_response(content_type="image/svg+xml", body=body)
+        assert _probe_image("https://example.com/logo.svg") == "logo"
+
+    def test_broken_svg(self, mock_get):
+        body = b'?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"></svg>'
+        mock_get.return_value = _image_response(content_type="image/svg+xml", body=body)
+        assert _probe_image("https://example.com/logo.svg") is None
+
+    def test_http_error(self, mock_get):
+        mock_get.return_value = _image_response(status=404)
+        assert _probe_image("https://example.com/missing.png") is None
+
+    @patch("mkdocs_awesomelist.awesomelist.time.sleep")
+    def test_rate_limited_then_ok(self, _mock_sleep, mock_get):
+        mock_get.side_effect = [
+            _image_response(status=429),
+            _image_response(body=_png_bytes(1200, 630)),
+        ]
+        assert _probe_image("https://example.com/og.png") == "picture"
+
+    def test_network_error(self, mock_get):
+        mock_get.side_effect = requests.ConnectionError("refused")
+        assert _probe_image("https://example.com/img.png") is None
+
+    def test_unreadable_image_format(self, mock_get):
+        mock_get.return_value = _image_response(content_type="image/avif", body=b"...")
+        assert _probe_image("https://example.com/img.avif") == "picture"
+
+    def test_empty_image(self, mock_get):
+        mock_get.return_value = _image_response(body=b"")
+        assert _probe_image("https://example.com/og.png") is None
+
+    def test_not_an_image(self, mock_get):
+        mock_get.return_value = _image_response(content_type="text/html", body=b"<html>")
+        assert _probe_image("https://example.com/page") is None
+
+
+@patch("mkdocs_awesomelist.awesomelist._probe_image")
+@patch("mkdocs_awesomelist.awesomelist.web_preview")
+class TestFetchPreview:
+
+    def test_image_found(self, mock_preview, mock_probe):
+        mock_preview.return_value = ("Title", "Desc", "/og.png")
+        mock_probe.return_value = "picture"
+        result = _fetch_preview("https://example.com/page")
+        assert result == Preview("https://example.com/og.png", "picture")
+
+    def test_no_image(self, mock_preview, mock_probe):
+        mock_preview.return_value = ("Title", "Desc", None)
+        assert _fetch_preview("https://example.com") == Preview()
+        mock_probe.assert_not_called()
+
+    def test_broken_image(self, mock_preview, mock_probe):
+        mock_preview.return_value = ("Title", "Desc", "https://example.com/og.png")
+        mock_probe.return_value = None
+        assert _fetch_preview("https://example.com") == Preview()
+
+    def test_malformed_image_url(self, mock_preview, mock_probe):
+        mock_preview.return_value = ("Title", "Desc", "http://[broken")
+        assert _fetch_preview("https://example.com") == Preview()
+        mock_probe.assert_not_called()
+
+    def test_page_error(self, mock_preview, mock_probe):
+        mock_preview.side_effect = Exception("timeout")
+        assert _fetch_preview("https://example.com") == Preview()
+
+
+class TestDomainLabel:
+
+    @pytest.mark.parametrize(
+        "url, label",
+        [
+            ("https://www.example.com/page", "example.com"),
+            ("https://lab.example.org", "lab.example.org"),
+            ("https://github.com/owner/repo#readme", "github.com/owner"),
+            ("https://github.com", "github.com"),
+        ],
+    )
+    def test_label(self, url, label):
+        assert _domain_label(url) == label
 
 
 # ---------------------------------------------------------------------------
-# AwesomeList.on_page_markdown
+# Rendered markup
 # ---------------------------------------------------------------------------
 
 
+class TestRenderedEntries:
+
+    def test_entry_with_picture(self):
+        plugin = _make_plugin()
+        plugin.previews["https://example.com"] = Preview("https://example.com/og.png", "picture")
+        html = _render(plugin, "- [Example](https://example.com) - An example site.")
+
+        assert '<ul class="awesome-list awesome-list--media">' in html
+        assert '<li class="awesome-entry" data-image="picture">' in html
+        assert 'class="awesome-entry__media" href="https://example.com"' in html
+        assert '<img alt="" loading="lazy" src="https://example.com/og.png"' in html
+        assert '<a class="awesome-entry__title" href="https://example.com">Example</a>' in html
+        assert '<span class="awesome-entry__domain">example.com</span>' in html
+        assert '<span class="awesome-entry__desc">An example site.</span>' in html
+
+    def test_entry_without_image(self):
+        plugin = _make_plugin()
+        plugin.previews["https://example.com"] = Preview()
+        html = _render(plugin, "- [Example](https://example.com) - An example site.")
+
+        assert 'data-image="none"' in html
+        assert "awesome-entry__media" not in html
+
+    def test_favicon_path_is_relative_to_page(self):
+        plugin = _make_plugin()
+        plugin.previews["https://example.com"] = Preview()
+        plugin.favicons["example.com"] = b"png"
+        plugin.page_url = "about/"
+        html = _render(plugin, "- [Example](https://example.com) - An example site.")
+
+        assert 'src="../assets/awesome-list/favicons/example.com.png"' in html
+
+    def test_initial_when_no_favicon(self):
+        plugin = _make_plugin()
+        plugin.previews["https://example.com"] = Preview()
+        plugin.favicons["example.com"] = None
+        html = _render(plugin, "- [example](https://example.com) - An example site.")
+
+        assert '<span aria-hidden="true" class="awesome-entry__icon">E</span>' in html
+
+    def test_markdown_in_description(self):
+        plugin = _make_plugin()
+        plugin.previews["https://a.example.com"] = Preview()
+        html = _render(plugin, "- [A](https://a.example.com) - Works with [B](https://b.example.com).")
+
+        assert (
+            '<span class="awesome-entry__desc">Works with '
+            '<a href="https://b.example.com">B</a>.</span>'
+        ) in html
+
+    def test_sub_entries(self):
+        plugin = _make_plugin()
+        plugin.previews["https://a.example.com"] = Preview()
+        text = (
+            "- [A](https://a.example.com) - Main entry.\n"
+            "\t- [A Beta](https://a.example.com/beta) - Beta version.\n"
+        )
+        html = _render(plugin, text)
+
+        assert '<ul class="awesome-entry__subs">' in html
+        assert '<li class="awesome-entry__sub">' in html
+        assert '<a href="https://a.example.com/beta" title="Beta version.">A Beta</a>' in html
+        assert '<span class="awesome-entry__sub-desc">Beta version.</span>' in html
+
+    def test_nested_sub_entries_kept_out_of_description(self):
+        plugin = _make_plugin()
+        plugin.previews["https://a.example.com"] = Preview()
+        text = (
+            "- [A](https://a.example.com) - Main entry.\n"
+            "\t- [A Beta](https://a.example.com/beta) - Beta version.\n"
+            "\t\t- [A Beta Docs](https://a.example.com/beta/docs) - Docs.\n"
+        )
+        html = _render(plugin, text)
+
+        assert '<span class="awesome-entry__sub-desc">Beta version.</span>' in html
+        assert '<li><a href="https://a.example.com/beta/docs">A Beta Docs</a> - Docs.</li>' in html
+
+    def test_loose_list(self):
+        plugin = _make_plugin()
+        plugin.previews["https://a.example.com"] = Preview()
+        plugin.previews["https://b.example.com"] = Preview()
+        text = "- [A](https://a.example.com) - Entry A.\n\n- [B](https://b.example.com) - Entry B.\n"
+        html = _render(plugin, text)
+
+        assert html.count('<li class="awesome-entry" data-image="none">') == 2
+        assert '<span class="awesome-entry__desc">Entry B.</span>' in html
+        assert "<p>" not in html
+
+    def test_section_styles(self):
+        plugin = _make_plugin(section_styles={"libraries": "index"})
+        plugin.previews["https://a.example.com"] = Preview()
+        plugin.previews["https://b.example.com"] = Preview()
+        text = (
+            "## Editors\n\n- [A](https://a.example.com) - Editor.\n\n"
+            "## Libraries\n\n- [B](https://b.example.com) - Library.\n"
+        )
+        html = _render(plugin, text)
+
+        editors, libraries = html.split('<h2 id="libraries">')
+        assert "awesome-list--media" in editors
+        assert "awesome-list--index" in libraries
+
+    def test_entries_without_preview_data_unchanged(self):
+        plugin = _make_plugin()
+        text = "- [Example](https://example.com) - An example site."
+        assert _render(plugin, text) == markdown.markdown(text)
+
+    def test_plain_lists_unchanged(self):
+        plugin = _make_plugin()
+        text = "- plain item\n- [Contents](#contents)"
+        assert _render(plugin, text) == markdown.markdown(text)
+
+
+# ---------------------------------------------------------------------------
+# MkDocs events
+# ---------------------------------------------------------------------------
+
+
+@patch("mkdocs_awesomelist.awesomelist._fetch_favicon")
+@patch("mkdocs_awesomelist.awesomelist._fetch_preview")
 class TestOnPageMarkdown:
-    """Tests for markdown processing and social-card injection."""
 
-    def _make_plugin(self, debug=False, card_style="append"):
-        plugin = AwesomeList()
-        plugin.config = {"debug-log": debug, "card-style": card_style}
-        return plugin
-
-    def test_no_matches_returns_unchanged(self):
-        plugin = self._make_plugin()
-        md = "# Hello\n\nJust some text."
+    def test_no_entries(self, mock_preview, mock_favicon):
+        plugin = _make_plugin()
+        md = "# Hello\n\n- plain item"
         assert plugin.on_page_markdown(md) == md
+        mock_preview.assert_not_called()
 
-    def test_plain_list_items_ignored(self):
-        plugin = self._make_plugin()
-        md = "- plain item without a link\n- another one"
-        assert plugin.on_page_markdown(md) == md
-
-    @patch("mkdocs_awesomelist.awesomelist._fetch_all_previews", new_callable=MagicMock)
-    @patch("mkdocs_awesomelist.awesomelist.asyncio.set_event_loop")
-    @patch("mkdocs_awesomelist.awesomelist.asyncio.new_event_loop")
-    def test_single_entry_injects_placeholder(self, mock_new_loop, _mock_set, _mock_fetch):
-        """A matching awesome-list line gets a UUID placeholder appended."""
-        plugin = self._make_plugin()
-
-        # Simulate the async fetch returning card data
-        mock_loop = MagicMock()
-        mock_new_loop.return_value = mock_loop
-        mock_loop.run_until_complete.return_value = [
-            (
-                ("MicroPython", "https://micropython.org", "Python for MCUs"),
-                "MicroPython",
-                "Python for microcontrollers",
-                "https://micropython.org/img.png",
-            )
-        ]
-
-        md = "- [MicroPython](https://micropython.org) - Python for MCUs"
-        result = plugin.on_page_markdown(md)
-
-        # The original line should still be present
-        assert "- [MicroPython](https://micropython.org) - Python for MCUs" in result
-        # A UUID placeholder should have been appended
-        assert re.search(r"\{[0-9a-f]{32}\}", result)
-        # Plugin should have stored the rendered card
-        assert len(plugin.social_cards) == 1
-
-    @patch("mkdocs_awesomelist.awesomelist._fetch_all_previews", new_callable=MagicMock)
-    @patch("mkdocs_awesomelist.awesomelist.asyncio.set_event_loop")
-    @patch("mkdocs_awesomelist.awesomelist.asyncio.new_event_loop")
-    def test_multiple_entries(self, mock_new_loop, _mock_set, _mock_fetch):
-        """Multiple awesome-list lines each get their own placeholder."""
-        plugin = self._make_plugin()
-
-        mock_loop = MagicMock()
-        mock_new_loop.return_value = mock_loop
-        mock_loop.run_until_complete.return_value = [
-            (
-                ("Project A", "https://a.example.com", "Description A"),
-                "Project A",
-                "Desc A",
-                None,
-            ),
-            (
-                ("Project B", "https://b.example.com", "Description B"),
-                "Project B",
-                "Desc B",
-                "https://b.example.com/img.png",
-            ),
-        ]
-
+    def test_fetches_previews_and_favicons(self, mock_preview, mock_favicon):
+        mock_preview.return_value = Preview("https://example.com/og.png", "picture")
+        mock_favicon.return_value = b"png"
+        plugin = _make_plugin()
         md = (
-            "- [Project A](https://a.example.com) - Description A\n"
-            "- [Project B](https://b.example.com) - Description B"
+            "- [A](https://example.com/a) - Description A\n"
+            "- [B](https://www.example.com/b) - Description B\n"
+            "\t- [Sub](https://example.com/sub) - Not fetched"
         )
-        result = plugin.on_page_markdown(md)
 
-        placeholders = re.findall(r"\{[0-9a-f]{32}\}", result)
-        assert len(placeholders) == 2
-        assert len(plugin.social_cards) == 2
+        assert plugin.on_page_markdown(md, page=SimpleNamespace(url="about/")) == md
+        assert set(plugin.previews) == {"https://example.com/a", "https://www.example.com/b"}
+        assert plugin.favicons == {"example.com": b"png"}
+        assert plugin.page_url == "about/"
 
-    @patch("mkdocs_awesomelist.awesomelist._fetch_all_previews", new_callable=MagicMock)
-    @patch("mkdocs_awesomelist.awesomelist.asyncio.set_event_loop")
-    @patch("mkdocs_awesomelist.awesomelist.asyncio.new_event_loop")
-    def test_no_image_hides_img_style(self, mock_new_loop, _mock_set, _mock_fetch):
-        """When no image is available, img_style should contain 'display: none'."""
-        plugin = self._make_plugin()
-
-        mock_loop = MagicMock()
-        mock_new_loop.return_value = mock_loop
-        mock_loop.run_until_complete.return_value = [
-            (
-                ("NoImg", "https://noimg.example.com", "No image here"),
-                "NoImg",
-                "No image",
-                None,
-            ),
-        ]
-
-        md = "- [NoImg](https://noimg.example.com) - No image here"
+    def test_urls_fetched_once(self, mock_preview, mock_favicon):
+        mock_preview.return_value = Preview()
+        plugin = _make_plugin()
+        md = "- [A](https://example.com) - Description A"
+        plugin.on_page_markdown(md)
         plugin.on_page_markdown(md)
 
-        card_html = list(plugin.social_cards.values())[0]
-        assert "display: none" in card_html
-
-    @patch("mkdocs_awesomelist.awesomelist._fetch_all_previews", new_callable=MagicMock)
-    @patch("mkdocs_awesomelist.awesomelist.asyncio.set_event_loop")
-    @patch("mkdocs_awesomelist.awesomelist.asyncio.new_event_loop")
-    def test_fetch_exception_skips_entry(self, mock_new_loop, _mock_set, _mock_fetch):
-        """If a preview fetch raises, the entry is skipped gracefully."""
-        plugin = self._make_plugin()
-
-        mock_loop = MagicMock()
-        mock_new_loop.return_value = mock_loop
-        mock_loop.run_until_complete.return_value = [
-            Exception("timeout"),
-        ]
-
-        md = "- [Broken](https://broken.example.com) - Oops"
-        result = plugin.on_page_markdown(md)
-
-        # No placeholder injected for the failed entry
-        assert not re.search(r"\{[0-9a-f]{32}\}", result)
-        assert len(plugin.social_cards) == 0
-
-    @patch("mkdocs_awesomelist.awesomelist._fetch_all_previews", new_callable=MagicMock)
-    @patch("mkdocs_awesomelist.awesomelist.asyncio.set_event_loop")
-    @patch("mkdocs_awesomelist.awesomelist.asyncio.new_event_loop")
-    def test_fallback_title_and_description(self, mock_new_loop, _mock_set, _mock_fetch):
-        """When fetched title/description are empty, use the markdown values."""
-        plugin = self._make_plugin()
-
-        mock_loop = MagicMock()
-        mock_new_loop.return_value = mock_loop
-        mock_loop.run_until_complete.return_value = [
-            (
-                ("FallbackName", "https://fb.example.com", "Fallback desc"),
-                None,  # no title from web_preview
-                None,  # no description from web_preview
-                None,
-            ),
-        ]
-
-        md = "- [FallbackName](https://fb.example.com) - Fallback desc"
-        plugin.on_page_markdown(md)
-
-        card_html = list(plugin.social_cards.values())[0]
-        assert "FallbackName" in card_html
-        assert "Fallback desc" in card_html
-
-    @patch("mkdocs_awesomelist.awesomelist._fetch_all_previews", new_callable=MagicMock)
-    @patch("mkdocs_awesomelist.awesomelist.asyncio.set_event_loop")
-    @patch("mkdocs_awesomelist.awesomelist.asyncio.new_event_loop")
-    def test_replace_mode_removes_original_line(self, mock_new_loop, _mock_set, _mock_fetch):
-        """In replace mode, the original awesome-list line is replaced by the placeholder."""
-        plugin = self._make_plugin(card_style="replace")
-
-        mock_loop = MagicMock()
-        mock_new_loop.return_value = mock_loop
-        mock_loop.run_until_complete.return_value = [
-            (
-                ("MicroPython", "https://micropython.org", "Python for MCUs"),
-                "OG Title",
-                "OG Description",
-                "https://micropython.org/img.png",
-            )
-        ]
-
-        md = "- [MicroPython](https://micropython.org) - Python for MCUs"
-        result = plugin.on_page_markdown(md)
-
-        # The original line should NOT be present
-        assert "- [MicroPython]" not in result
-        # A UUID placeholder should replace it
-        assert re.search(r"\{[0-9a-f]{32}\}", result)
-        assert len(plugin.social_cards) == 1
-
-    @patch("mkdocs_awesomelist.awesomelist._fetch_all_previews", new_callable=MagicMock)
-    @patch("mkdocs_awesomelist.awesomelist.asyncio.set_event_loop")
-    @patch("mkdocs_awesomelist.awesomelist.asyncio.new_event_loop")
-    def test_replace_mode_uses_entry_text_not_og(self, mock_new_loop, _mock_set, _mock_fetch):
-        """In replace mode, the card uses the awesome-list name/desc, not OG metadata."""
-        plugin = self._make_plugin(card_style="replace")
-
-        mock_loop = MagicMock()
-        mock_new_loop.return_value = mock_loop
-        mock_loop.run_until_complete.return_value = [
-            (
-                ("MyProject", "https://example.com", "My description"),
-                "OG Title",
-                "OG Description",
-                "https://example.com/img.png",
-            )
-        ]
-
-        md = "- [MyProject](https://example.com) - My description"
-        plugin.on_page_markdown(md)
-
-        card_html = list(plugin.social_cards.values())[0]
-        assert "MyProject" in card_html
-        assert "My description" in card_html
-        assert "OG Title" not in card_html
-        assert "OG Description" not in card_html
-
-    @patch("mkdocs_awesomelist.awesomelist._fetch_all_previews", new_callable=MagicMock)
-    @patch("mkdocs_awesomelist.awesomelist.asyncio.set_event_loop")
-    @patch("mkdocs_awesomelist.awesomelist.asyncio.new_event_loop")
-    def test_replace_mode_multiple_entries(self, mock_new_loop, _mock_set, _mock_fetch):
-        """Multiple entries in replace mode are all replaced."""
-        plugin = self._make_plugin(card_style="replace")
-
-        mock_loop = MagicMock()
-        mock_new_loop.return_value = mock_loop
-        mock_loop.run_until_complete.return_value = [
-            (
-                ("Project A", "https://a.example.com", "Description A"),
-                "OG A",
-                "OG Desc A",
-                None,
-            ),
-            (
-                ("Project B", "https://b.example.com", "Description B"),
-                "OG B",
-                "OG Desc B",
-                "https://b.example.com/img.png",
-            ),
-        ]
-
-        md = (
-            "- [Project A](https://a.example.com) - Description A\n"
-            "- [Project B](https://b.example.com) - Description B"
-        )
-        result = plugin.on_page_markdown(md)
-
-        placeholders = re.findall(r"\{[0-9a-f]{32}\}", result)
-        assert len(placeholders) == 2
-        assert len(plugin.social_cards) == 2
-        # Original lines should be gone
-        assert "- [Project A]" not in result
-        assert "- [Project B]" not in result
+        assert mock_preview.call_count == 1
+        assert mock_favicon.call_count == 1
 
 
-# ---------------------------------------------------------------------------
-# AwesomeList.on_page_content
-# ---------------------------------------------------------------------------
+def test_on_config_registers_extension_and_css():
+    plugin = _make_plugin()
+    config = SimpleNamespace(markdown_extensions=["toc"], extra_css=["css/theme.css"])
+    plugin.on_config(config)
+
+    assert isinstance(config.markdown_extensions[-1], AwesomeListExtension)
+    assert config.extra_css == ["assets/awesome-list/awesome-list.css", "css/theme.css"]
 
 
-class TestOnPageContent:
-    """Tests for the HTML post-processing step."""
+def test_on_post_build_writes_assets(tmp_path):
+    plugin = _make_plugin()
+    plugin.favicons = {"example.com": b"png", "no-icon.com": None}
+    plugin.on_post_build(SimpleNamespace(site_dir=str(tmp_path)))
 
-    def test_replaces_placeholders_in_html(self):
-        plugin = AwesomeList()
-        uid = uuid.uuid4().hex
-        plugin.social_cards[uid] = "<div>card</div>"
-        html = f"<p>before</p>{{{uid}}}<p>after</p>"
-        result = plugin.on_page_content(html, page=None, config=None)
-        assert "<div>card</div>" in result
-        assert f"{{{uid}}}" not in result
-
-    def test_no_placeholders_passthrough(self):
-        plugin = AwesomeList()
-        html = "<p>nothing to replace</p>"
-        result = plugin.on_page_content(html, page=None, config=None)
-        assert result == html
-
-
-# ---------------------------------------------------------------------------
-# HTML template
-# ---------------------------------------------------------------------------
-
-
-class TestHtmlTemplate:
-    """Quick sanity checks on the card template."""
-
-    def test_template_contains_placeholders(self):
-        for key in ("url", "image", "title", "description", "img_style"):
-            assert f"{{{key}}}" in HTML
-
-    def test_template_renders(self):
-        rendered = HTML.format(
-            url="https://example.com",
-            image="https://example.com/img.png",
-            title="Example",
-            description="An example",
-            img_style="",
-        )
-        assert "https://example.com" in rendered
-        assert "Example" in rendered
+    assets = tmp_path / "assets" / "awesome-list"
+    assert (assets / "awesome-list.css").is_file()
+    assert (assets / "favicons" / "example.com.png").read_bytes() == b"png"
+    assert not (assets / "favicons" / "no-icon.com.png").exists()
