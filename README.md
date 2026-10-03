@@ -1,5 +1,10 @@
 # MkDocs Awesome List Plugin
 
+> [!WARNING]
+> **Development in this repository has stopped.**
+> This plugin is still usable, but development has moved to a hook in
+> [@carlosperate/awesome-microbit/hooks/awesome_list.py](https://github.com/carlosperate/awesome-microbit/tree/main/hooks/awesome_list.py).
+
 MkDocs Plugin to turn each entry in an
 [Awesome List](https://github.com/topics/awesome) into a card, with the linked
 page's preview image and favicon.
